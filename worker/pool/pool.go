@@ -2,6 +2,7 @@ package pool
 
 import (
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/mxpaul/unfuckup_s3/generator"
@@ -46,9 +47,16 @@ func (wp *WorkerPool) FanOut() {
 	var finish bool
 	for i := uint64(0); !finish; i = (i + 1) % wp.MaxParallel {
 		select {
-		case genTask := <-wp.InputChannel:
-			w := wp.worker[i]
-			w.InputChannel <- worker.WorkerTask{Line: genTask.Line, Id: genTask.Id}
+		case genTask, ok := <-wp.InputChannel:
+			if !ok {
+				break
+			}
+			if genTask.Line == 0 {
+				log.Printf("WTF!!! empty task from generator: open=%v", ok)
+			} else {
+				w := wp.worker[i]
+				w.InputChannel <- worker.WorkerTask{Line: genTask.Line, Id: genTask.Id}
+			}
 		case <-wp.ControlChannel:
 			finish = true
 		}

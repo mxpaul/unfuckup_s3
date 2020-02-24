@@ -115,15 +115,16 @@ func ChainMiddleware(h http.HandlerFunc, middleware ...Middleware) http.HandlerF
 func (app *S3APP) StartFakeServerFromConfig(config *viper.Viper) {
 	mux := http.NewServeMux()
 	middleware := []Middleware{
-		func(next http.HandlerFunc) http.HandlerFunc {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				log.Printf("fake server got request: %+v", r.URL)
-				next.ServeHTTP(w, r)
-			})
-		},
+		//func(next http.HandlerFunc) http.HandlerFunc {
+		//	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		//		log.Printf("fake server got request: %+v", r.URL)
+		//		next.ServeHTTP(w, r)
+		//	})
+		//},
 	}
 
 	backupHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
 		fmt.Fprint(w, strings.Repeat("0", 10240))
 	})
 	restoreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
