@@ -1,8 +1,6 @@
 package worker
 
-import (
-//
-)
+type WorkerCallback func(WorkerTask) error
 
 type WorkerTask struct {
 	Line      uint64
@@ -18,15 +16,14 @@ type WorkResult struct {
 type Worker struct {
 	InputChannel  chan WorkerTask
 	ResultChannel chan WorkResult
-	//ControlChannel chan struct{}
-	RipChannel chan struct{}
-	Callback   func(WorkerTask) error
+	RipChannel    chan struct{}
+	Callback      func(WorkerTask) error
+	Ident         string
 }
 
 func (w *Worker) Start() {
 	w.InputChannel = make(chan WorkerTask)
 	w.ResultChannel = make(chan WorkResult)
-	//w.ControlChannel = make(chan struct{})
 	w.RipChannel = make(chan struct{}, 1)
 	go func() {
 		for task := range w.InputChannel {
@@ -37,24 +34,10 @@ func (w *Worker) Start() {
 		close(w.ResultChannel)
 		w.RipChannel <- struct{}{}
 		close(w.RipChannel)
-		//for {
-		//	select {
-		//	case task := <-w.InputChannel:
-		//		err := w.Callback(task)
-		//		result := WorkResult{Task: task, Err: err}
-		//		w.ResultChannel <- result
-		//	case <-w.ControlChannel:
-		//		w.RipChannel <- struct{}{}
-		//		close(w.RipChannel)
-		//		return
-		//	}
-		//}
 	}()
 }
 
 func (w *Worker) StopAsync() {
-	//w.ControlChannel <- struct{}{}
-	//close(w.ControlChannel)
 	close(w.InputChannel)
 }
 

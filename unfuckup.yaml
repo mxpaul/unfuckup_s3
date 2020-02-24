@@ -3,4 +3,14 @@ s3:
   input: "testdata/file-id-list.txt"
   generator:
     value_channel_capacity: 0
-#    offset: 10
+  workerpool:
+    max_parallel: 100
+  stat:
+    after_seconds: 10
+    after_lines: 100000
+  backup:
+    url_prefix: "https://cloud.i/backup/"
+  restore:
+    url_prefix: "https://cloud.i/amazon/"
+  fakeserver:
+    use_fake_server: true

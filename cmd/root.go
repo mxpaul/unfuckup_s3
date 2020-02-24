@@ -66,6 +66,11 @@ s3 эмулируется походом в заданный конфигом UR
 	viper.SetDefault("s3.generator.limit", defaultLimit)
 	viper.SetDefault("s3.generator.value_channel_capacity", defaultValueChannelCapacity)
 	viper.SetDefault("s3.generator.error_channel_capacity", defaultErrorChannelCapacity)
+	viper.SetDefault("s3.workerpool.max_parallel", defaultMaxParallel)
+	viper.SetDefault("s3.workerpool.output_channel_capacity", defaultMaxParallel)
+	viper.SetDefault("s3.stat.after_lines", defaultStatAfterLines)
+	viper.SetDefault("s3.stat.after_seconds", defaultStatAfterSeconds)
+	viper.SetDefault("s3.fakeserver.use_fake_server", false)
 
 	rootCmd.AddCommand(s3Cmd)
 
