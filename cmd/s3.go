@@ -2,11 +2,10 @@ package cmd
 
 import (
 	"context"
-	//"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
-	//"math/rand"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,34 +65,51 @@ func NewGeneratorFromConfig(config *viper.Viper) *generator.Generator {
 
 func NewWorkerPoolFromConfig(config *viper.Viper) *pool.WorkerPool {
 	wp := &pool.WorkerPool{
+		InputChannelCapacity:  config.GetUint64("s3.workerpool.input_channel_capacity"),
 		OutputChannelCapacity: config.GetUint64("s3.workerpool.output_channel_capacity"),
 		MaxParallel:           config.GetUint64("s3.workerpool.max_parallel"),
 	}
 	return wp
 }
 
-//func ProcessFileID(task worker.WorkerTask) (err error) {
-//	time.Sleep(1 * time.Millisecond)
-//	if rand.Float32() > 0.9 {
-//		err = errors.New("timeout")
-//	}
-//	return err
-//}
-
 type Stat struct {
+	Input   uint64
 	Success uint64
 	Fail    uint64
+	Retry   uint64
+	Fatal   uint64
 }
 
+func (s *Stat) AddInput() {
+	atomic.AddUint64(&s.Input, 1)
+}
 func (s *Stat) AddSuccess() {
 	atomic.AddUint64(&s.Success, 1)
 }
 func (s *Stat) AddFail() {
 	atomic.AddUint64(&s.Fail, 1)
 }
+func (s *Stat) AddRetry() {
+	atomic.AddUint64(&s.Retry, 1)
+}
+func (s *Stat) AddFatal() {
+	atomic.AddUint64(&s.Fatal, 1)
+}
 
-func (s *Stat) Dump() {
-	log.Printf("[STAT] Success: %d Fail: %d", s.Success, s.Fail)
+func (s *Stat) String() string {
+	arg := make([]interface{}, 0, 5)
+	arg = append(arg,
+		atomic.LoadUint64(&s.Input),
+		atomic.LoadUint64(&s.Success),
+		atomic.LoadUint64(&s.Fail),
+		atomic.LoadUint64(&s.Retry),
+		atomic.LoadUint64(&s.Fatal),
+	)
+	return fmt.Sprintf("Input: %d Success: %d Fail: %d Retry: %d: Fatal: %d", arg...)
+}
+
+func (s *Stat) Dump(prefix string) {
+	log.Printf("%s %s", prefix, s.String())
 }
 
 type S3APP struct {
@@ -115,6 +131,15 @@ func ChainMiddleware(h http.HandlerFunc, middleware ...Middleware) http.HandlerF
 func (app *S3APP) StartFakeServerFromConfig(config *viper.Viper) {
 	mux := http.NewServeMux()
 	middleware := []Middleware{
+		func(next http.HandlerFunc) http.HandlerFunc {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if rand.Float32() > 0.999 {
+					w.WriteHeader(http.StatusInternalServerError)
+				} else {
+					next.ServeHTTP(w, r)
+				}
+			})
+		},
 		//func(next http.HandlerFunc) http.HandlerFunc {
 		//	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		//		log.Printf("fake server got request: %+v", r.URL)
@@ -171,7 +196,6 @@ func (app *S3APP) FilePrecessCallback() worker.WorkerCallback {
 	return func(task worker.WorkerTask) (err error) {
 		body, err := app.Backuper.RequestBackupBody(task.Id)
 		if err != nil {
-			log.Printf("backuper: %s", err)
 			return err
 		}
 		return app.Restorer.PutObjectFromReader(task.Id, body)
@@ -204,8 +228,6 @@ func s3Run(cmd *cobra.Command, args []string) {
 	gen.Go(ctx)
 
 	pool := NewWorkerPoolFromConfig(config)
-	pool.InputChannel = gen.ValueChannel
-	//pool.Go(ProcessFileID)
 	pool.Go(app.FilePrecessCallback())
 
 	sigchan := make(chan os.Signal, 1)
@@ -215,15 +237,26 @@ func s3Run(cmd *cobra.Command, args []string) {
 	go func() {
 		for {
 			time.Sleep(time.Duration(config.GetUint64("s3.stat.after_seconds")) * time.Second)
-			stat.Dump()
+			stat.Dump("[STAT][after_seconds]")
 		}
 	}()
 
 	readCount := uint64(0)
 	var Break bool
 	var defaultWorkResult worker.WorkResult
+	var NoMoreInput bool
 	for !Break {
 		select {
+		case msg, can_read := <-gen.ValueChannel:
+			if !can_read {
+				if !NoMoreInput {
+					NoMoreInput = true
+					pool.StopAsync()
+				}
+				break
+			}
+			stat.AddInput()
+			pool.InputChannel <- worker.WorkerTask{Line: msg.Line, Id: msg.Id}
 		case msg, can_read := <-gen.ErrorChannel:
 			if can_read {
 				log.Printf("[ERR] Line %d: %s", msg.Line, msg.Err)
@@ -237,30 +270,41 @@ func s3Run(cmd *cobra.Command, args []string) {
 				log.Printf("WTF! Default value from open channel!")
 				break
 			}
-			//log.Printf("Done task %+v", res.Task)
 			if res.Err == nil {
 				stat.AddSuccess()
 			} else {
 				stat.AddFail()
+				if !NoMoreInput {
+					res.Task.FailCount++
+					if res.Task.FailCount < 3 {
+						log.Printf("[ERR][RETRY] Line %d Id %s: %s", res.Task.Line, res.Task.Id, res.Err)
+						stat.AddRetry()
+						pool.InputChannel <- res.Task
+					} else {
+						stat.AddFatal()
+						log.Printf("[ERR][FATAL] Line %d Id %s: %s", res.Task.Line, res.Task.Id, res.Err)
+					}
+				} else {
+					// FIXME: need support retry after generator input closed
+					stat.AddFatal()
+					log.Printf("[ERR][FATAL] Line %d Id %s: %s", res.Task.Line, res.Task.Id, res.Err)
+				}
 			}
 			readCount++
 			if readCount%viper.GetUint64("s3.stat.after_lines") == 0 {
-				stat.Dump()
+				stat.Dump("[STAT][after_lines]")
 			}
-		case <-gen.DoneChannel:
-			pool.StopAsync()
 		case GotSignal := <-sigchan:
 			log.Print("")
 			log.Printf("Got signal %v", GotSignal)
-			pool.StopAsync() // pool should ignore new tasks from generator
 			genShutdown()
 		}
 	}
 	gen.WG.Wait()
 
-	stat.Dump()
+	stat.Dump("[STAT][final]")
 	if app.FakeHTTPServer != nil {
 		app.FakeHTTPServer.Close()
 	}
-	log.Printf("exit after reading %d lines", readCount)
+	log.Printf("exit after reading %d lines", stat.Input)
 }

@@ -5,18 +5,17 @@ import (
 	"log"
 	"sync"
 
-	"github.com/mxpaul/unfuckup_s3/generator"
 	"github.com/mxpaul/unfuckup_s3/worker"
 )
 
 type WorkerPool struct {
-	ControlChannel        chan struct{}
-	InputChannel          chan generator.GeneratorValue
+	InputChannel          chan worker.WorkerTask
 	OutputChannel         chan worker.WorkResult
 	RipChannel            chan struct{}
 	FanInRipChannel       chan struct{}
 	MaxParallel           uint64
 	worker                []*worker.Worker
+	InputChannelCapacity  uint64
 	OutputChannelCapacity uint64
 }
 
@@ -30,16 +29,15 @@ func (wp *WorkerPool) Go(cb worker.WorkerCallback) {
 }
 
 func (wp *WorkerPool) Init(cb worker.WorkerCallback) {
-	wp.ControlChannel = make(chan struct{}, 1)
 	wp.RipChannel = make(chan struct{}, 1)
 	wp.FanInRipChannel = make(chan struct{}, 1)
+	wp.InputChannel = make(chan worker.WorkerTask, wp.InputChannelCapacity)
 	wp.OutputChannel = make(chan worker.WorkResult, wp.OutputChannelCapacity)
 
 	wp.worker = make([]*worker.Worker, 0, wp.MaxParallel)
 	for i := uint64(0); i < wp.MaxParallel; i++ {
 		worker := &worker.Worker{Callback: cb, Ident: fmt.Sprintf("%d", i)}
 		wp.worker = append(wp.worker, worker)
-		//worker.Start()
 	}
 }
 
@@ -47,18 +45,16 @@ func (wp *WorkerPool) FanOut() {
 	var finish bool
 	for i := uint64(0); !finish; i = (i + 1) % wp.MaxParallel {
 		select {
-		case genTask, ok := <-wp.InputChannel:
+		case task, ok := <-wp.InputChannel:
 			if !ok {
+				finish = true
 				break
 			}
-			if genTask.Line == 0 {
+			if task.Line == 0 {
 				log.Printf("WTF!!! empty task from generator: open=%v", ok)
 			} else {
-				w := wp.worker[i]
-				w.InputChannel <- worker.WorkerTask{Line: genTask.Line, Id: genTask.Id}
+				wp.worker[i].InputChannel <- task
 			}
-		case <-wp.ControlChannel:
-			finish = true
 		}
 	}
 	for _, worker := range wp.worker {
@@ -66,11 +62,8 @@ func (wp *WorkerPool) FanOut() {
 	}
 	<-wp.FanInRipChannel
 	wp.RipChannel <- struct{}{}
-	for _ = range wp.InputChannel {
-	}
 }
 
-//
 func (wp *WorkerPool) FanIn() {
 	var wg sync.WaitGroup
 	wg.Add(len(wp.worker))
@@ -89,11 +82,7 @@ func (wp *WorkerPool) FanIn() {
 }
 
 func (wp *WorkerPool) StopAsync() {
-	select {
-	case wp.ControlChannel <- struct{}{}:
-		//close(wp.ControlChannel)
-	default:
-	}
+	close(wp.InputChannel)
 }
 
 func (wp *WorkerPool) StopBlocking() {

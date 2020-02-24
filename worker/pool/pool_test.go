@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mxpaul/unfuckup_s3/generator"
 	"github.com/mxpaul/unfuckup_s3/worker"
 )
 
@@ -40,9 +39,9 @@ func TestInitWorkerPool(t *testing.T) {
 	if assert.NotNil(t, wp.OutputChannel, "Output channel created") {
 		assert.Equal(t, cap(wp.OutputChannel), int(wp.OutputChannelCapacity), "Output channel capacity match")
 	}
-	if assert.NotNil(t, wp.ControlChannel, "Control channel created") {
-		assert.Equal(t, cap(wp.ControlChannel), 1, "Control channel capacity 1 for non-blocking send")
-	}
+	//if assert.NotNil(t, wp.ControlChannel, "Control channel created") {
+	//	assert.Equal(t, cap(wp.ControlChannel), 1, "Control channel capacity 1 for non-blocking send")
+	//}
 	if assert.NotNil(t, wp.RipChannel, "workerpool RIP channel created") {
 		assert.Equal(t, cap(wp.RipChannel), 1, "RIP channel capacity 1 for non-blocking send")
 	}
@@ -96,8 +95,8 @@ func TestFanIn(t *testing.T) {
 
 func TestFanOut(t *testing.T) {
 	wp := WorkerPool{
-		MaxParallel:  3,
-		InputChannel: make(chan generator.GeneratorValue, 3),
+		MaxParallel:          3,
+		InputChannelCapacity: 3,
 	}
 	wp.Init(AlwaysOK)
 	for _, w := range wp.worker {
@@ -105,9 +104,9 @@ func TestFanOut(t *testing.T) {
 	}
 	go wp.FanOut()
 	go wp.FanIn()
-	wp.InputChannel <- generator.GeneratorValue{Line: 1, Id: "111"}
-	wp.InputChannel <- generator.GeneratorValue{Line: 2, Id: "222"}
-	wp.InputChannel <- generator.GeneratorValue{Line: 3, Id: "333"}
+	wp.InputChannel <- worker.WorkerTask{Line: 1, Id: "111"}
+	wp.InputChannel <- worker.WorkerTask{Line: 2, Id: "222"}
+	wp.InputChannel <- worker.WorkerTask{Line: 3, Id: "333"}
 
 	got := make([]worker.WorkResult, 0, 3)
 	ReadToGo := 3
@@ -122,7 +121,8 @@ func TestFanOut(t *testing.T) {
 	}
 	assert.Eventually(t, ReadEveryResult, 100*time.Millisecond, 1*time.Millisecond)
 
-	wp.ControlChannel <- struct{}{} // Signal FanOut to finish gracefully
+	close(wp.InputChannel)
+	//wp.ControlChannel <- struct{}{} // Signal FanOut to finish gracefully
 	Riped := func() bool {
 		select {
 		case <-wp.RipChannel:
@@ -139,24 +139,24 @@ func TestFanOut(t *testing.T) {
 	}
 	assert.ElementsMatch(t, got, expected, "expected results read from output channel")
 
-	// Generator may put additional tasks into InputChannel but it will be ignored
-	wp.InputChannel <- generator.GeneratorValue{Line: 1, Id: "111"}
-	wp.InputChannel <- generator.GeneratorValue{Line: 2, Id: "222"}
-	wp.InputChannel <- generator.GeneratorValue{Line: 3, Id: "333"}
-	wp.InputChannel <- generator.GeneratorValue{Line: 3, Id: "333"} // Block if FanOut not reading
-	close(wp.InputChannel)
+	//// Generator may put additional tasks into InputChannel but it will be ignored
+	//wp.InputChannel <- worker.WorkerTask{Line: 1, Id: "111"}
+	//wp.InputChannel <- worker.WorkerTask{Line: 2, Id: "222"}
+	//wp.InputChannel <- worker.WorkerTask{Line: 3, Id: "333"}
+	//wp.InputChannel <- worker.WorkerTask{Line: 3, Id: "333"} // Block if FanOut not reading
+	//close(wp.InputChannel)
 }
 
 func TestParallelTaskProcessing(t *testing.T) {
 	jobDelay := 10 * time.Millisecond
 	jobCount := 27
 	wp := WorkerPool{
-		MaxParallel:  3,
-		InputChannel: make(chan generator.GeneratorValue, jobCount),
+		MaxParallel:          3,
+		InputChannelCapacity: uint64(jobCount),
 	}
 	callback := AlwaysOKDelayedFor(jobDelay)
 	wp.Go(callback)
-	task := generator.GeneratorValue{Line: 1, Id: "111"}
+	task := worker.WorkerTask{Line: 1, Id: "111"}
 
 	for i := 0; i < jobCount; i++ {
 		wp.InputChannel <- task
