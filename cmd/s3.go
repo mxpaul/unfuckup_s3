@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"context"
-	"errors"
+	//"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"math/rand"
+	//"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
